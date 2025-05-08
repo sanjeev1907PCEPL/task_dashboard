@@ -314,11 +314,26 @@ def calculate_actual_schedule(df):
     actual_schedule['fallback source'] = actual_schedule.apply(tag_fallback_source, axis=1)
     return actual_schedule
 
+def parse_dates_safely(series):
+    try:
+        # First try MM/DD/YYYY which is what Microsoft Planner usually exports
+        parsed = pd.to_datetime(series, format='%m/%d/%Y', errors='coerce')
+        # If too many NaTs, retry DD/MM/YYYY
+        if parsed.isna().sum() > 0.5 * len(series):
+            parsed_alt = pd.to_datetime(series, dayfirst=True, errors='coerce')
+            if parsed_alt.isna().sum() < parsed.isna().sum():
+                logging.warning("Date format fallback: using DD/MM/YYYY format.")
+                return parsed_alt
+        return parsed
+    except Exception as e:
+        logging.error(f"Date parsing failed: {e}")
+        return pd.to_datetime(series, infer_datetime_format=True, errors='coerce')
+
 def load_data(file):
     try:
         df = pd.read_excel(file)
         df.columns = [col.strip().lower() for col in df.columns]
-        
+
         column_mappings = {
             'task name': 'activity name',
             'task id': 'task no',
@@ -329,16 +344,18 @@ def load_data(file):
                 df = df.rename(columns={old_col: new_col})
                 logging.info(f"Renamed column '{old_col}' to '{new_col}'")
 
+        # Robust date parsing
         date_columns = ['created date', 'start date', 'due date', 'completed date']
         for col in date_columns:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
-        
+                df[col] = parse_dates_safely(df[col])
+
         if 'activity name' not in df.columns:
             st.error(f"Column 'activity name' not found. Available columns: {df.columns.tolist()}")
             return None
+
         df['activity name'] = df['activity name'].map(activity_mapping).fillna(df['activity name'])
-        
+
         required_columns = ['task no', 'activity name', 'order no.', 'start date', 'due date', 'completed date']
         if 'assigned to' not in df.columns:
             df['assigned to'] = 'Unassigned'
@@ -346,12 +363,12 @@ def load_data(file):
         if missing_cols:
             st.error(f"Missing required columns: {missing_cols}. Available columns: {df.columns.tolist()}")
             return None
+
         return df
     except Exception as e:
         logging.error(f"Error loading file: {e}")
         st.error(f"Error loading file: {e}. Please check the log file for details.")
         return None
-
 def main():
     st.title("📊 Task Management Dashboard")
     uploaded_file = st.file_uploader("Upload your Microsoft Planner Excel file", type="xlsx")
